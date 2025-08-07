@@ -43,7 +43,6 @@ var (
 	addNoteBtnDisabled bool
 	editorOpen         bool
 	currentInd         int
-	testT              int
 	// icons
 	logo, noteIco, searchIco, trashIco, errorIco, xcircle image.Image
 )
@@ -374,14 +373,12 @@ func editorPane(gtx C) D {
 									t := notes[currentInd].title
 									c := notes[currentInd].content
 									notes = slices.Delete(notes, currentInd, currentInd+1)
-									if scratchNotes != nil {
-										for i := range scratchNotes {
-											b := strings.Contains(scratchNotes[i].title, t) &&
-												strings.Contains(scratchNotes[i].content, c)
-											if b {
-												scratchNotes = slices.Delete(scratchNotes, i, i+1)
-												break
-											}
+									for i := range scratchNotes {
+										b := strings.Contains(scratchNotes[i].title, t) &&
+											strings.Contains(scratchNotes[i].content, c)
+										if b {
+											scratchNotes = slices.Delete(scratchNotes, i, i+1)
+											break
 										}
 									}
 									editorOpen = !editorOpen
@@ -439,7 +436,7 @@ type msgBox struct {
 	offsetY     float32
 }
 
-func (_ msgBox) layout(gtx C) D {
+func (msgBox) layout(gtx C) D {
 	gtx.Constraints.Max.Y, gtx.Constraints.Min.Y = msg.height, msg.height
 	macro := op.Record(gtx.Ops)
 	dims := layout.Background{}.Layout(gtx,
@@ -515,7 +512,7 @@ func (_ msgBox) layout(gtx C) D {
 	return dims
 }
 
-func (_ msgBox) resetOffset() {
+func (msgBox) resetOffset() {
 	msg.offsetY = MSG_BOX_HEIGHT
 }
 
@@ -527,7 +524,7 @@ type confirmPrompt struct {
 	w, h                        int
 }
 
-func (_ confirmPrompt) layout(gtx C) D {
+func (confirmPrompt) layout(gtx C) D {
 	// Set a backdrop
 	trans := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
 	paint.ColorOp{Color: color.NRGBA{A: 180}}.Add(gtx.Ops)
