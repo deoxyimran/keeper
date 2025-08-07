@@ -1,9 +1,10 @@
 package main
 
 import (
-	"Keeper/app/ui"
 	"log"
 	"os"
+
+	"github.com/deoxyimran/keeper/app/ui"
 
 	"gioui.org/app"
 	"gioui.org/op"

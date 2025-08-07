@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"Keeper/app/utils/svgs"
-	"Keeper/res/images"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -14,6 +12,9 @@ import (
 	"os"
 	"slices"
 	"strings"
+
+	"github.com/deoxyimran/keeper/app/utils/svgs"
+	"github.com/deoxyimran/keeper/res/images"
 
 	"gioui.org/font"
 	"gioui.org/font/gofont"
