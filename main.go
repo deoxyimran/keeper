@@ -41,7 +41,7 @@ func run(window *app.Window) error {
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
-			ui.UI(gtx)
+			ui.Layout(gtx)
 			e.Frame(gtx.Ops)
 		}
 	}

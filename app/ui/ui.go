@@ -619,8 +619,8 @@ func (confirmPrompt) layout(gtx C) D {
 	return layout.Dimensions{Size: gtx.Constraints.Max}
 }
 
-func layoutUI(gtx C) {
-	layout.Background{}.Layout(gtx,
+func Layout(gtx C) D {
+	dims := layout.Background{}.Layout(gtx,
 		// Set a background
 		func(gtx C) D {
 			defer clip.Rect{Max: gtx.Constraints.Min}.Push(gtx.Ops).Pop()
@@ -666,10 +666,7 @@ func layoutUI(gtx C) {
 	if prompt.isPromptOpen {
 		prompt.layout(gtx)
 	}
-}
-
-func UI(gtx C) {
-	layoutUI(gtx)
+	return dims
 }
 
 // The very first thing called in UI(); check for any available notes and load them
