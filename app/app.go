@@ -33,18 +33,16 @@ import (
 type App struct {
 	th                 *material.Theme
 	notesPane          notesPane
+	editorPane         editorPane
 	searchBar          widget.Editor
-	titleEntry         widget.Editor
-	noteEditor         widget.Editor
 	notesList          widget.List
 	addNoteBtn         material.ButtonStyle
 	msg                msgBox
-	prompt             confirmPrompt
+	prompt             msgPrompt
 	notes              []note
+	noteIndex          int
 	scratchNotes       []note
 	addNoteBtnDisabled bool
-	editorOpen         bool
-	currentInd         int
 	// icons
 	logo, noteIco, trashIco, errorIco, xcircleIco image.Image
 }
@@ -85,6 +83,7 @@ func NewApp() App {
 	th.Fg = color.NRGBA{250, 249, 246, 255}
 	app.th = th
 
+	// Note lists pane
 	app.notesPane = notesPane{
 		th:  th,
 		ico: searchIco,
@@ -92,28 +91,36 @@ func NewApp() App {
 			SingleLine: true,
 			Submit:     true,
 		},
-		notesList: widget.List{
+		notesListW: widget.List{
 			List: layout.List{
 				Axis: layout.Vertical,
 			},
 		},
+		noteIndex: &app.noteIndex,
 	}
-	app.titleEntry = widget.Editor{
-		SingleLine: true,
-		Submit:     true,
-	}
-	app.noteEditor = widget.Editor{
-		SingleLine: false,
-		Submit:     false,
+	// Note Editor
+	app.editorPane = editorPane{
+		th: th,
+		trashBtn: icoButton{
+			ico: trashIco,
+		},
+		titleEditor: widget.Editor{
+			SingleLine: true,
+			Submit:     true,
+		},
+		noteEditor: widget.Editor{
+			SingleLine: false,
+			Submit:     false,
+		},
+		noteIndex: &app.noteIndex,
+		isOpen:    false,
 	}
 
 	// Init message box
-	msg := msgBox{height: MSG_BOX_HEIGHT, offsetY: MSG_BOX_HEIGHT} // offset it so that it is hidden initially
-	app.msg = msg
+	app.msg = msgBox{height: MSG_BOX_HEIGHT, offsetY: MSG_BOX_HEIGHT} // offset it so that it is hidden initially
 
 	// Init popup
-	prompt := confirmPrompt{w: 350, h: 140}
-	app.prompt = prompt
+	app.prompt = msgPrompt{w: 350, h: 140}
 
 	app.logo = logo
 	app.noteIco = noteIco
@@ -243,8 +250,9 @@ type notesPane struct {
 	addNoteBtn         addNoteBtn
 	noteItemTempl      noteItem
 	searchBar          widget.Editor
-	notesList          widget.List
+	notesListW         widget.List
 	notes              []note
+	noteIndex          *int
 	addNoteBtnDisabled bool
 }
 
@@ -348,14 +356,53 @@ func (np *notesPane) notesPane(gtx C) D {
 	)
 }
 
-type editorPane struct {
-	th          *material.Theme
-	titleEditor widget.Editor
-	notes       []note
-	noteIndex   int
+type icoButton struct {
+	ico     image.Image
+	onClick func()
 }
 
-func (e *editorPane) editorPane(gtx C) D {
+func (i *icoButton) layout(gtx C) D {
+	macro := op.Record(gtx.Ops)
+	dims := widget.Image{Src: paint.NewImageOp(i.ico)}.Layout(gtx)
+	call := macro.Stop()
+	// Register and check for events
+	defer clip.Rect{Max: dims.Size}.Push(gtx.Ops).Pop()
+	event.Op(gtx.Ops, &i)
+	for {
+		ev, ok := gtx.Source.Event(pointer.Filter{
+			Target: &trashIco,
+			Kinds:  pointer.Press | pointer.Release,
+		})
+		if !ok {
+			break
+		}
+		if x, ok := ev.(pointer.Event); ok {
+			switch x.Kind {
+			case pointer.Release:
+				if i.onClick != nil {
+					i.onClick()
+				}
+				gtx.Execute(op.InvalidateCmd{})
+			}
+		}
+	}
+	// Layout the widget
+	call.Add(gtx.Ops)
+	return dims
+}
+
+type editorPane struct {
+	th          *material.Theme
+	prompt      *msgPrompt
+	trashBtn    icoButton
+	titleEditor widget.Editor
+	noteEditor  widget.Editor
+	notes       []note
+	noteIndex   *int
+	isOpen      bool
+}
+
+func (e *editorPane) layout(gtx C) D {
 	return layout.Flex{
 		Axis: layout.Vertical,
 	}.Layout(gtx,
@@ -398,49 +445,28 @@ func (e *editorPane) editorPane(gtx C) D {
 				layout.Rigid(layout.Spacer{Width: unit.Dp(5)}.Layout),
 				// Trash button
 				layout.Rigid(func(gtx C) D {
-					macro := op.Record(gtx.Ops)
-					dims := widget.Image{Src: paint.NewImageOp(trashIco)}.Layout(gtx)
-					call := macro.Stop()
-					// Register and check for events
-					defer clip.Rect{Max: dims.Size}.Push(gtx.Ops).Pop()
-					event.Op(gtx.Ops, &trashIco)
-					for {
-						ev, ok := gtx.Source.Event(pointer.Filter{
-							Target: &trashIco,
-							Kinds:  pointer.Press | pointer.Release,
-						})
-						if !ok {
-							break
-						}
-						if x, ok := ev.(pointer.Event); ok {
-							switch x.Kind {
-							case pointer.Release:
-								prompt.onConfirm = func() {
-									// Delete note pointed to by currentInd
-									t := notes[currentInd].title
-									c := notes[currentInd].content
-									notes = slices.Delete(notes, currentInd, currentInd+1)
-									for i := range scratchNotes {
-										b := strings.Contains(scratchNotes[i].title, t) &&
-											strings.Contains(scratchNotes[i].content, c)
-										if b {
-											scratchNotes = slices.Delete(scratchNotes, i, i+1)
-											break
-										}
-									}
-									editorOpen = !editorOpen
-									currentInd = -1
-									msg.resetOffset()
-									msg.isAnimating = true
+					e.trashBtn.onClick = func() {
+						e.prompt.onConfirm = func() {
+							// Delete note pointed to by currentInd
+							t := e.notes[currentInd].title
+							c := e.notes[currentInd].content
+							notes = slices.Delete(notes, currentInd, currentInd+1)
+							for i := range scratchNotes {
+								b := strings.Contains(scratchNotes[i].title, t) &&
+									strings.Contains(scratchNotes[i].content, c)
+								if b {
+									scratchNotes = slices.Delete(scratchNotes, i, i+1)
+									break
 								}
-								prompt.isPromptOpen = !prompt.isPromptOpen
-								gtx.Execute(op.InvalidateCmd{})
 							}
+							editorOpen = !editorOpen
+							currentInd = -1
+							msg.resetOffset()
+							msg.isAnimating = true
+							prompt.isPromptOpen = !prompt.isPromptOpen
 						}
 					}
-					// Layout the widget
-					call.Add(gtx.Ops)
-					return dims
+					return e.trashBtn.layout(gtx)
 				}),
 			)
 		}),
@@ -563,15 +589,15 @@ func (msgBox) resetOffset() {
 	msg.offsetY = MSG_BOX_HEIGHT
 }
 
-type confirmPrompt struct {
-	onConfirm                   func()
-	promptCancel, promptConfirm widget.Clickable
-	isPromptOpen                bool
-	backdropT                   int
-	w, h                        int
+type msgPrompt struct {
+	onConfirm             func()
+	cancelBtn, confirmBtn widget.Clickable
+	isPromptOpen          bool
+	backdropT             int
+	w, h                  int
 }
 
-func (confirmPrompt) layout(gtx C) D {
+func (msgPrompt) layout(gtx C) D {
 	// Set a backdrop
 	trans := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
 	paint.ColorOp{Color: color.NRGBA{A: 180}}.Add(gtx.Ops)
