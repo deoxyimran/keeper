@@ -37,12 +37,12 @@ type App struct {
 	searchBar          widget.Editor
 	notesList          widget.List
 	addNoteBtn         material.ButtonStyle
-	msg                msgBox
+	notif              notification
 	prompt             msgPrompt
 	notes              []note
 	noteIndex          int
-	scratchNotes       []note
 	addNoteBtnDisabled bool
+	editorOpen         bool
 	// icons
 	logo, noteIco, trashIco, errorIco, xcircleIco image.Image
 }
@@ -64,12 +64,11 @@ const (
 )
 
 const (
-	IMG_PATH       = "res/images/"
-	MSG_BOX_HEIGHT = 25
+	IMG_PATH = "res/images/"
 )
 
-func NewApp() App {
-	app := App{}
+func NewApp() *App {
+	app := &App{}
 	// Loading icons/logo to memory as raw pixel format
 	logo, _ := png.Decode(bytes.NewReader(images.Logo))
 	noteIco, _ := svgs.LoadSvg(strings.NewReader(images.Note), image.Point{})
@@ -83,7 +82,18 @@ func NewApp() App {
 	th.Fg = color.NRGBA{250, 249, 246, 255}
 	app.th = th
 
-	// Note lists pane
+	// Init prompt
+	app.prompt = msgPrompt{
+		w: 350, h: 140,
+		errorIco:   errorIco,
+		cancelBtn:  widget.Clickable{},
+		confirmBtn: widget.Clickable{},
+	}
+
+	// Init notification
+	app.notif = notification{offsetY: MSG_BOX_HEIGHT, th: material.NewTheme()} // offset it so that it is hidden initially
+
+	// Panes
 	app.notesPane = notesPane{
 		th:  th,
 		ico: searchIco,
@@ -96,7 +106,13 @@ func NewApp() App {
 				Axis: layout.Vertical,
 			},
 		},
-		noteIndex: &app.noteIndex,
+		notes:        &app.notes,
+		noteIndex:    &app.noteIndex,
+		scratchNotes: []note{},
+		editorOpen:   &app.editorOpen,
+		addNoteBtn: button{
+			label: "Add Note",
+		},
 	}
 	// Note Editor
 	app.editorPane = editorPane{
@@ -112,15 +128,11 @@ func NewApp() App {
 			SingleLine: false,
 			Submit:     false,
 		},
+		notes:     app.notes,
 		noteIndex: &app.noteIndex,
-		isOpen:    false,
+		prompt:    &app.prompt,
+		notif:     &app.notif,
 	}
-
-	// Init message box
-	app.msg = msgBox{height: MSG_BOX_HEIGHT, offsetY: MSG_BOX_HEIGHT} // offset it so that it is hidden initially
-
-	// Init popup
-	app.prompt = msgPrompt{w: 350, h: 140}
 
 	app.logo = logo
 	app.noteIco = noteIco
@@ -132,44 +144,29 @@ func NewApp() App {
 
 }
 
-func (a *App) searchNUpdateNotes(title string) {
-	title = strings.ToLower(title)
-	a.currentInd = -1
-	if len(a.notes) == 0 && len(a.scratchNotes) == 0 {
-		return
-	}
-	var tempNotes []note
-	if a.scratchNotes == nil {
-		for _, v := range a.notes {
-			if strings.Contains(strings.ToLower(v.title), title) {
-				tempNotes = append(tempNotes, v)
-			}
-		}
-		a.scratchNotes = a.notes
-	} else {
-		for _, v := range a.scratchNotes {
-			if strings.Contains(strings.ToLower(v.title), title) {
-				tempNotes = append(tempNotes, v)
-			}
-		}
-	}
-	a.notes = tempNotes
-}
-
-type addNoteBtn struct {
-	tag        *bool
+type button struct {
+	th         *material.Theme
+	clickable  widget.Clickable
+	label      string
 	isDisabled bool
+	onClick    func()
 }
 
-func (a *addNoteBtn) layout(btn material.ButtonStyle, gtx C) D {
-	macro := op.Record(gtx.Ops)
-	dims := btn.Layout(gtx)
-	call := macro.Stop()
-	call.Add(gtx.Ops)
-	defer clip.UniformRRect(image.Rect(0, 0, dims.Size.X, dims.Size.Y), 3).Push(gtx.Ops).Pop()
-	paint.ColorOp{Color: color.NRGBA{B: 200, A: 190}}.Add(gtx.Ops)
-	paint.PaintOp{}.Add(gtx.Ops)
-	event.Op(gtx.Ops, a.tag)
+func (a *button) layout(gtx C) D {
+	btn := material.Button(a.th, &a.clickable, a.label)
+	var dims layout.Dimensions
+	if a.isDisabled {
+		macro := op.Record(gtx.Ops)
+		dims = btn.Layout(gtx)
+		call := macro.Stop()
+		call.Add(gtx.Ops)
+		defer clip.UniformRRect(image.Rect(0, 0, dims.Size.X, dims.Size.Y), 3).Push(gtx.Ops).Pop()
+		paint.ColorOp{Color: color.NRGBA{B: 200, A: 190}}.Add(gtx.Ops)
+		paint.PaintOp{}.Add(gtx.Ops)
+		event.Op(gtx.Ops, a)
+	} else {
+
+	}
 	return dims
 }
 
@@ -245,48 +242,49 @@ func (ni *noteItem) layout(gtx C, index int) D {
 }
 
 type notesPane struct {
-	th                 *material.Theme
-	ico                image.Image
-	addNoteBtn         addNoteBtn
-	noteItemTempl      noteItem
-	searchBar          widget.Editor
-	notesListW         widget.List
-	notes              []note
-	noteIndex          *int
-	addNoteBtnDisabled bool
+	th            *material.Theme
+	ico           image.Image
+	addNoteBtn    button
+	noteItemTempl noteItem
+	searchBar     widget.Editor
+	notesListW    widget.List
+	notes         *[]note
+	noteIndex     *int
+	scratchNotes  []note
+	editorOpen    *bool
 }
 
 func (np *notesPane) notesPane(gtx C) D {
-	maxW := 230
+	w := 230
+	gtx.Constraints.Max.X, gtx.Constraints.Min.X = w, w // hardcode width
+
 	return layout.Flex{
 		Axis: layout.Vertical,
 	}.Layout(gtx,
-		// Search bar
+		// Searchbar
 		layout.Rigid(func(gtx C) D {
-			// Get the last search
+			// Update searchbar states
 			prevSearch := np.searchBar.Text()
-			// Update states
 			if s := np.searchBar.Text(); s != prevSearch {
 				if s == "" {
-					np.addNoteBtnDisabled = false
-					if scratchNotes != nil {
-						notes = scratchNotes
-						scratchNotes = nil
+					np.addNoteBtn.isDisabled = false
+					if np.scratchNotes != nil {
+						*np.notes = np.scratchNotes
+						np.scratchNotes = nil
 					}
 				} else {
-					np.addNoteBtnDisabled = true
-					editorOpen = false
-					if len(notes) != 0 && currentInd != -1 {
-						notes[currentInd].isSelected = false
+					np.addNoteBtn.isDisabled = true
+					*np.editorOpen = false
+					if len(*np.notes) != 0 && *np.noteIndex != -1 {
+						(*np.notes)[*np.noteIndex].isSelected = false
 					}
-					searchNUpdateNotes(s)
+					np.searchNUpdateNotes(s)
 				}
 				gtx.Execute(op.InvalidateCmd{})
 			}
-			// Layout everything
-			gtx.Constraints.Max.X, gtx.Constraints.Min.X = maxW, maxW
+			// Layout searchbar
 			dims := layout.Background{}.Layout(gtx,
-				// Set a background
+				// Layout searchbar bg
 				func(gtx C) D {
 					sz := gtx.Constraints.Min
 					defer clip.UniformRRect(image.Rect(0, 0, sz.X, sz.Y), 5).Push(gtx.Ops).Pop()
@@ -294,7 +292,7 @@ func (np *notesPane) notesPane(gtx C) D {
 					paint.PaintOp{}.Add(gtx.Ops)
 					return layout.Dimensions{Size: sz}
 				},
-				// Layout the search box
+				// Layout searchbar
 				func(gtx C) D {
 					return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx C) D {
 						edit := material.Editor(np.th, &np.searchBar, "Search")
@@ -318,7 +316,6 @@ func (np *notesPane) notesPane(gtx C) D {
 		layout.Rigid(layout.Spacer{Height: unit.Dp(7)}.Layout),
 		// List of notes
 		layout.Flexed(0.5, func(gtx C) D {
-			gtx.Constraints.Max.X, gtx.Constraints.Min.X = maxW, maxW
 			return layout.Background{}.Layout(gtx,
 				// Set a background
 				func(gtx C) D {
@@ -331,7 +328,7 @@ func (np *notesPane) notesPane(gtx C) D {
 				// Layout the list
 				func(gtx C) D {
 					return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx C) D {
-						return material.List(np.th, &np.notesList).Layout(gtx, len(np.notes), np.noteItemTemp.layout)
+						return material.List(np.th, &np.notesListW).Layout(gtx, len(np.notes), np.noteItemTemp.layout)
 					})
 				},
 			)
@@ -340,20 +337,36 @@ func (np *notesPane) notesPane(gtx C) D {
 		layout.Rigid(layout.Spacer{Height: unit.Dp(7)}.Layout),
 		// 'Add Note' button
 		layout.Rigid(func(gtx C) D {
-			if addNoteBtn.Clicked(gtx) {
-				notes = append(notes, note{title: "Untitled"})
+			if np.addNoteBtn.clickable.Clicked(gtx) {
+				*np.notes = append(*np.notes, note{title: "Untitled"})
 			}
-			gtx.Constraints.Max.X, gtx.Constraints.Min.X = maxW, maxW
-			var dims layout.Dimensions
-			btn := material.Button(th, &addNoteBtn, "Add Note")
-			if addNoteBtnDisabled {
-				dims = disabledAddNoteBtn(btn, gtx)
-			} else {
-				dims = btn.Layout(gtx)
-			}
-			return dims
+			return np.addNoteBtn.layout(gtx)
 		}),
 	)
+}
+
+func (np *notesPane) searchNUpdateNotes(title string) {
+	title = strings.ToLower(title)
+	*np.noteIndex = -1
+	if len(*np.notes) == 0 && len(np.scratchNotes) == 0 {
+		return
+	}
+	var tempNotes []note
+	if np.scratchNotes == nil {
+		for _, v := range *np.notes {
+			if strings.Contains(strings.ToLower(v.title), title) {
+				tempNotes = append(tempNotes, v)
+			}
+		}
+		np.scratchNotes = *np.notes
+	} else {
+		for _, v := range np.scratchNotes {
+			if strings.Contains(strings.ToLower(v.title), title) {
+				tempNotes = append(tempNotes, v)
+			}
+		}
+	}
+	*np.notes = tempNotes
 }
 
 type icoButton struct {
@@ -370,7 +383,7 @@ func (i *icoButton) layout(gtx C) D {
 	event.Op(gtx.Ops, &i)
 	for {
 		ev, ok := gtx.Source.Event(pointer.Filter{
-			Target: &trashIco,
+			Target: &i.ico,
 			Kinds:  pointer.Press | pointer.Release,
 		})
 		if !ok {
@@ -394,12 +407,13 @@ func (i *icoButton) layout(gtx C) D {
 type editorPane struct {
 	th          *material.Theme
 	prompt      *msgPrompt
+	notif       *notification
 	trashBtn    icoButton
 	titleEditor widget.Editor
 	noteEditor  widget.Editor
 	notes       []note
 	noteIndex   *int
-	isOpen      bool
+	editorOpen  *bool
 }
 
 func (e *editorPane) layout(gtx C) D {
@@ -503,14 +517,13 @@ func (e *editorPane) layout(gtx C) D {
 	)
 }
 
-type msgBox struct {
-	height      int
+type notification struct {
+	th          *material.Theme
 	isAnimating bool
 	offsetY     float32
 }
 
-func (msgBox) layout(gtx C) D {
-	gtx.Constraints.Max.Y, gtx.Constraints.Min.Y = msg.height, msg.height
+func (nf *notification) layout(gtx C) D {
 	macro := op.Record(gtx.Ops)
 	dims := layout.Background{}.Layout(gtx,
 		func(gtx C) D {
@@ -529,14 +542,14 @@ func (msgBox) layout(gtx C) D {
 				layout.Flexed(0.5, func(gtx C) D {
 					cgtx := gtx
 					cgtx.Constraints.Min.Y = 14
-					th_ := *th
+					th_ := *nf.th
 					th_.Fg = color.NRGBA{23, 27, 23, 255}
 					lbl := material.Label(&th_, unit.Sp(14), "Successfully deleted note!")
 					lbl.Font.Weight = font.ExtraBold
 					lbl.Alignment = text.Middle
 					return lbl.Layout(cgtx)
 				}),
-				// Cross button to hide msgbox from view
+				// Cross button to hide notification from view
 				layout.Rigid(func(gtx C) D {
 					img := widget.Image{Src: paint.NewImageOp(xcircle)}
 					img.Position = layout.Center
@@ -585,15 +598,16 @@ func (msgBox) layout(gtx C) D {
 	return dims
 }
 
-func (msgBox) resetOffset() {
+func (notification) resetOffset() {
 	msg.offsetY = MSG_BOX_HEIGHT
 }
 
 type msgPrompt struct {
+	errorIco              image.Image
 	onConfirm             func()
 	cancelBtn, confirmBtn widget.Clickable
 	isPromptOpen          bool
-	backdropT             int
+	backdropTag           int
 	w, h                  int
 }
 
