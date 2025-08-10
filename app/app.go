@@ -1,4 +1,4 @@
-package ui
+package app
 
 import (
 	"bytes"
@@ -32,7 +32,6 @@ import (
 
 type App struct {
 	// Widgets
-	th         *material.Theme
 	notesPane  notesPane
 	editorPane editorPane
 	searchBar  widget.Editor
@@ -41,10 +40,14 @@ type App struct {
 	notif      notification
 	prompt     msgPrompt
 	// States
+	scratchNotes         []note
 	notes                []note
-	selectedNoteByIndex  int
+	selectedNote         int
 	isAddNoteBtnDisabled bool
-	editorOpen           bool
+	isEditorOpen         bool
+	// Logo, theme, etc.
+	logo image.Image
+	th   *material.Theme
 }
 
 type note struct {
@@ -70,8 +73,9 @@ const (
 
 func NewApp() *App {
 	app := &App{}
-	// Loading icons/logo to memory as raw pixel format
-	logo, _ := png.Decode(bytes.NewReader(images.Logo))
+
+	// Loading app logo and icons
+	app.logo, _ = png.Decode(bytes.NewReader(images.Logo))
 	noteIco, _ := svgs.LoadSvg(strings.NewReader(images.Note), image.Point{})
 	searchIco, _ := svgs.LoadSvg(strings.NewReader(images.Search), image.Point{})
 	trashIco, _ := svgs.LoadSvg(strings.NewReader(images.Trash), image.Point{})
@@ -84,18 +88,14 @@ func NewApp() *App {
 	app.th = th
 
 	// Init prompt
-	app.prompt = msgPrompt{
-		w: 350, h: 140,
-		errorIco:   errorIco,
-	}
+	app.prompt = newMsgPrompt(th, 350, 140, errorIco)
 
 	// Init notification
-	// app.notif = notification{offsetY: MSG_BOX_HEIGHT, th: material.NewTheme()} // offset it so that it is hidden initially
+	app.notif = newNotification(th, xcircleIco)
 
 	// Panes
-	app.notesPane = newNotesPane(th, searchIco, noteIco, &app.notes, &app.editorOpen)
-
-	app.editorPane = newEditorPane(th, &app.prompt, app.notif)
+	app.notesPane = newNotesPane(th, searchIco, noteIco, &app.scratchNotes, &app.notes, &app.selectedNote, &app.isEditorOpen)
+	app.editorPane = newEditorPane(th, trashIco, &app.prompt, &app.notif)
 
 	return app
 
@@ -128,10 +128,10 @@ func (a *button) layout(gtx C) D {
 }
 
 type noteItem struct {
-	th                   *material.Theme
-	ico                  image.Image
-	getNote              func(i int) *note
-	isSelected  func(i int) bool
+	th                 *material.Theme
+	ico                image.Image
+	getNote            func(i int) *note
+	isSelected         func(i int) bool
 	handleSelect       func(i int)
 	handleUnselectLast func()
 }
@@ -147,7 +147,7 @@ func (ni *noteItem) layout(gtx C, index int) D {
 				return widget.Image{Src: paint.NewImageOp(ni.ico)}.Layout(gtx)
 			}),
 			layout.Flexed(0.5, func(gtx C) D {
-				return material.Label(ni.th, unit.Sp(13), ni.notes[index].title).Layout(gtx)
+				return material.Label(ni.th, unit.Sp(13), ni.getNote(index).title).Layout(gtx)
 			}),
 		)
 	}
@@ -209,27 +209,31 @@ type notesPane struct {
 	searchBarW widget.Editor
 	// States
 	lastSelected int
-	scratchNotes []note
+	scratchNotes *[]note
 	notes        *[]note
 	selectedNote *int
-	// noteIndexRef    *int
 	isEditorOpen *bool
 }
 
-func newNotesPane(th *material.Theme, searchIco image.Image, noteIco image.Image, notesRef *[]note, isEditorOpenRef *bool) notesPane {
+func newNotesPane(th *material.Theme, searchIco image.Image, noteIco image.Image, scratchNotes *[]note,
+	notes *[]note, selectedNote *int, isEditorOpen *bool) notesPane {
+
 	np := notesPane{
 		th:           th,
-		notes:        notesRef,
-		isEditorOpen: isEditorOpenRef,
+		scratchNotes: scratchNotes,
+		notes:        notes,
+		selectedNote: selectedNote,
+		isEditorOpen: isEditorOpen,
+		searchIco:    searchIco,
 	}
-	np.noteItem = noteItem{
-		th:                   th,
-		ico:                  noteIco,
+	np.noteItem = noteItem{ // init note item
+		th:  th,
+		ico: noteIco,
 		//Assign funcs
-		getNote:              np.getNote,
+		getNote:            np.getNote,
 		handleSelect:       np.handleSelectNote,
 		handleUnselectLast: np.handleUnselectLastNote,
-		isSelected:  np.isNoteSelected,
+		isSelected:         np.isNoteSelected,
 	}
 	return np
 }
@@ -241,7 +245,7 @@ func (np *notesPane) getNote(i int) *note {
 func (np *notesPane) handleSelectNote(i int) {
 	*np.selectedNote = i
 	(*np.notes)[i].isSelected = true
-	*np.isEditorOpenRef = true
+	*np.isEditorOpen = true
 }
 
 func (np *notesPane) isNoteSelected(i int) bool {
@@ -255,7 +259,7 @@ func (np *notesPane) handleUnselectLastNote() {
 func (np *notesPane) searchNotes(query string) {
 	query = strings.ToLower(query)
 	*np.selectedNote = -1
-	if len(*np.notes) == 0 && len(np.scratchNotes) == 0 {
+	if len(*np.notes) == 0 && len(*np.scratchNotes) == 0 {
 		return
 	}
 	var tempNotes []note
@@ -265,9 +269,9 @@ func (np *notesPane) searchNotes(query string) {
 				tempNotes = append(tempNotes, v)
 			}
 		}
-		np.scratchNotes = *np.notes
+		*np.scratchNotes = *np.notes
 	} else {
-		for _, v := range np.scratchNotes {
+		for _, v := range *np.scratchNotes {
 			if strings.Contains(strings.ToLower(v.title), query) {
 				tempNotes = append(tempNotes, v)
 			}
@@ -276,23 +280,23 @@ func (np *notesPane) searchNotes(query string) {
 	*np.notes = tempNotes
 }
 
-func (np *notesPane) updateNotes() {
+func (np *notesPane) updateNotes(gtx C) {
 	// Check search
-	prevSearch := np.searchBar.Text()
-	if s := np.searchBar.Text(); s != prevSearch {
+	prevSearch := np.searchBarW.Text()
+	if s := np.searchBarW.Text(); s != prevSearch {
 		if s == "" {
 			np.addNoteBtn.isDisabled = false
 			if np.scratchNotes != nil {
-				*np.notes = np.scratchNotes
+				*np.notes = *np.scratchNotes
 				np.scratchNotes = nil
 			}
 		} else {
 			np.addNoteBtn.isDisabled = true
-			*np.isEditorOpenRef = false
+			*np.isEditorOpen = false
 			if len(*np.notes) != 0 && *np.selectedNote != -1 {
 				(*np.notes)[*np.selectedNote].isSelected = false
 			}
-			np.searchNote(s)
+			np.searchNotes(s)
 		}
 		gtx.Execute(op.InvalidateCmd{})
 	}
@@ -300,7 +304,7 @@ func (np *notesPane) updateNotes() {
 
 func (np *notesPane) layout(gtx C) D {
 	// Update notes
-	np.updateNotes()
+	np.updateNotes(gtx)
 
 	w := 230
 	gtx.Constraints.Max.X, gtx.Constraints.Min.X = w, w // hardcode width
@@ -326,7 +330,7 @@ func (np *notesPane) layout(gtx C) D {
 						edit := material.Editor(np.th, &np.searchBarW, "Search")
 						edit.Font.Style = font.Italic
 						edit.TextSize = unit.Sp(14)
-						img := widget.Image{Src: paint.NewImageOp(np.ico)}
+						img := widget.Image{Src: paint.NewImageOp(np.searchIco)}
 						return layout.Flex{
 							Axis:      layout.Horizontal,
 							Alignment: layout.Middle,
@@ -356,7 +360,7 @@ func (np *notesPane) layout(gtx C) D {
 				// Layout the list
 				func(gtx C) D {
 					return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx C) D {
-						return material.List(np.th, &np.notesListW).Layout(gtx, len(*np.notes), np.noteItemW.layout)
+						return material.List(np.th, &np.notesListW).Layout(gtx, len(*np.notes), np.noteItem.layout)
 					})
 				},
 			)
@@ -417,20 +421,22 @@ type editorPane struct {
 	titleEditor widget.Editor
 	noteEditor  widget.Editor
 	// States
-	notes       *[]note
-	selectedNote   *int
-	isEditorOpen  *bool
+	scratchNotes *[]note
+	notes        *[]note
+	selectedNote *int
+	isEditorOpen *bool
 }
 
-func newEditorPane(th material.Theme, prompt *msgPrompt, notif *notification, ) editorPane {
+func newEditorPane(th *material.Theme, trashIco image.Image, prompt *msgPrompt, notif *notification) editorPane {
 	e := editorPane{
-		th: &th,
+		th:     th,
 		prompt: prompt,
-		notif: notif,
+		notif:  notif,
 		trashBtn: icoButton{
-			ico: ,
+			ico: trashIco,
 		},
 	}
+	return e
 }
 
 func (e *editorPane) layout(gtx C) D {
@@ -467,7 +473,7 @@ func (e *editorPane) layout(gtx C) D {
 					)
 					// Update states
 					if s := e.titleEditor.Text(); s != prevTitle {
-						e.notes[e.noteIndex].title = s
+						(*e.notes)[*e.selectedNote].title = s
 						gtx.Execute(op.InvalidateCmd{})
 					}
 					return dims
@@ -479,22 +485,22 @@ func (e *editorPane) layout(gtx C) D {
 					e.trashBtn.onClick = func() {
 						e.prompt.onConfirm = func() {
 							// Delete note pointed to by currentInd
-							t := e.notes[currentInd].title
-							c := e.notes[currentInd].content
-							notes = slices.Delete(notes, currentInd, currentInd+1)
-							for i := range scratchNotes {
-								b := strings.Contains(scratchNotes[i].title, t) &&
-									strings.Contains(scratchNotes[i].content, c)
+							t := (*e.notes)[*e.selectedNote].title
+							c := (*e.notes)[*e.selectedNote].content
+							*e.notes = slices.Delete(*e.notes, *e.selectedNote, *e.selectedNote+1)
+							for i := range *e.scratchNotes {
+								b := strings.Contains((*e.scratchNotes)[i].title, t) &&
+									strings.Contains((*e.scratchNotes)[i].content, c)
 								if b {
-									scratchNotes = slices.Delete(scratchNotes, i, i+1)
+									*e.scratchNotes = slices.Delete(*e.scratchNotes, i, i+1)
 									break
 								}
 							}
-							editorOpen = !editorOpen
-							currentInd = -1
-							msg.resetOffset()
-							msg.isAnimating = true
-							prompt.isPromptOpen = !prompt.isPromptOpen
+							*e.isEditorOpen = !*e.isEditorOpen
+							*e.selectedNote = -1
+							// e.prompt.resetOffset()
+							// e.prompt.isAnimating = true
+							// e.prompt.isPromptOpen = !e.prompt.isPromptOpen
 						}
 					}
 					return e.trashBtn.layout(gtx)
@@ -506,9 +512,9 @@ func (e *editorPane) layout(gtx C) D {
 		// Note editor
 		layout.Flexed(0.5, func(gtx C) D {
 			// Get the last note text
-			prevNote := noteEditor.Text()
+			prevNote := e.noteEditor.Text()
 			// Layout everything
-			edit := material.Editor(th, &noteEditor, "Write something...")
+			edit := material.Editor(e.th, &e.noteEditor, "Write something...")
 			edit.TextSize = unit.Sp(14)
 			dims := layout.Background{}.Layout(gtx,
 				// Set a background
@@ -525,8 +531,8 @@ func (e *editorPane) layout(gtx C) D {
 				},
 			)
 			// Update states
-			if s := noteEditor.Text(); s != prevNote {
-				notes[currentInd].content = s
+			if s := e.noteEditor.Text(); s != prevNote {
+				(*e.notes)[*e.selectedNote].content = s
 				gtx.Execute(op.InvalidateCmd{})
 			}
 			return dims
@@ -536,8 +542,16 @@ func (e *editorPane) layout(gtx C) D {
 
 type notification struct {
 	th          *material.Theme
+	xcircleIco  image.Image
 	isAnimating bool
 	offsetY     float32
+}
+
+func newNotification(th *material.Theme, xcircleIco image.Image) notification {
+	return notification{
+		th:         th,
+		xcircleIco: xcircleIco,
+	}
 }
 
 func (nf *notification) layout(gtx C) D {
@@ -568,18 +582,18 @@ func (nf *notification) layout(gtx C) D {
 				}),
 				// Cross button to hide notification from view
 				layout.Rigid(func(gtx C) D {
-					img := widget.Image{Src: paint.NewImageOp(xcircle)}
+					img := widget.Image{Src: paint.NewImageOp(nf.xcircleIco)}
 					img.Position = layout.Center
 					macro := op.Record(gtx.Ops)
 					dims := img.Layout(gtx)
 					call := macro.Stop()
 					// Tag event area
 					defer clip.Rect{Max: dims.Size}.Push(gtx.Ops).Pop()
-					event.Op(gtx.Ops, &xcircle)
+					event.Op(gtx.Ops, &nf.xcircleIco)
 					// Check for events
 					for {
 						ev, ok := gtx.Source.Event(pointer.Filter{
-							Target: &xcircle,
+							Target: &nf.xcircleIco,
 							Kinds:  pointer.Press | pointer.Release,
 						})
 						if !ok {
@@ -588,7 +602,7 @@ func (nf *notification) layout(gtx C) D {
 						if x, ok := ev.(pointer.Event); ok {
 							switch x.Kind {
 							case pointer.Release:
-								msg.resetOffset()
+								// msg.resetOffset()
 								gtx.Execute(op.InvalidateCmd{})
 							}
 						}
@@ -601,37 +615,39 @@ func (nf *notification) layout(gtx C) D {
 		},
 	)
 	call := macro.Stop()
-	if msg.isAnimating {
-		msg.offsetY -= 0.7
-		if msg.offsetY < 0 {
-			msg.offsetY = 0
-			msg.isAnimating = false
-		}
-		gtx.Execute(op.InvalidateCmd{})
-	}
+	// if nf.prmp.isAnimating {
+	// 	msg.offsetY -= 0.7
+	// 	if msg.offsetY < 0 {
+	// 		msg.offsetY = 0
+	// 		msg.isAnimating = false
+	// 	}
+	// 	gtx.Execute(op.InvalidateCmd{})
+	// }
 	defer clip.Rect{Max: dims.Size}.Push(gtx.Ops).Pop()
-	defer op.Offset(image.Pt(0, int(msg.offsetY))).Push(gtx.Ops).Pop()
+	// defer op.Offset(image.Pt(0, int(msg.offsetY))).Push(gtx.Ops).Pop()
 	call.Add(gtx.Ops)
 	return dims
 }
 
-func (notification) resetOffset() {
-	msg.offsetY = MSG_BOX_HEIGHT
-}
+// func (notification) resetOffset() {
+// 	msg.offsetY = MSG_BOX_HEIGHT
+// }
 
 type msgPrompt struct {
-	errorIco              image.Image
-	onConfirm             func()
-	cancelBtn, confirmBtn widget.Clickable
-	isPromptOpen          bool
-	backdropTag           int
-	w, h                  int
+	th                                *material.Theme
+	errorIco                          image.Image
+	onConfirm                         func()
+	cancelClickable, confirmClickable widget.Clickable
+	isPromptOpen                      bool
+	backdropTag                       int
+	w, h                              int
 }
 
-func newMsgPrompt(w, h int, errorIco image.Image) msgPrompt {
+func newMsgPrompt(th *material.Theme, w, h int, errorIco image.Image) msgPrompt {
 	return msgPrompt{
-		w: w,
-		h: h,
+		th:       th,
+		w:        w,
+		h:        h,
 		errorIco: errorIco,
 	}
 }
@@ -644,15 +660,15 @@ func (p *msgPrompt) close() {
 	p.isPromptOpen = false
 }
 
-func (msgPrompt) layout(gtx C) D {
+func (p *msgPrompt) layout(gtx C) D {
 	// Set a backdrop
 	trans := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
 	paint.ColorOp{Color: color.NRGBA{A: 180}}.Add(gtx.Ops)
 	paint.PaintOp{}.Add(gtx.Ops)
-	event.Op(gtx.Ops, &prompt.backdropT)
+	event.Op(gtx.Ops, &p.backdropTag)
 	trans.Pop()
 	// Save constraints and resize constraints min max
-	pt := image.Pt(prompt.w, prompt.h)
+	pt := image.Pt(p.w, p.h)
 	savedConstraints := gtx.Constraints
 	gtx.Constraints.Min, gtx.Constraints.Max = pt, pt
 	macro := op.Record(gtx.Ops)
@@ -668,12 +684,12 @@ func (msgPrompt) layout(gtx C) D {
 		// Layout popup
 		func(gtx C) D {
 			// Process popup actions
-			if prompt.promptCancel.Clicked(gtx) {
-				prompt.isPromptOpen = !prompt.isPromptOpen
+			if p.cancelClickable.Clicked(gtx) {
+				p.isPromptOpen = !p.isPromptOpen
 				gtx.Execute(op.InvalidateCmd{})
-			} else if prompt.promptConfirm.Clicked(gtx) {
-				prompt.onConfirm()
-				prompt.isPromptOpen = !prompt.isPromptOpen
+			} else if p.confirmClickable.Clicked(gtx) {
+				p.onConfirm()
+				p.isPromptOpen = !p.isPromptOpen
 				gtx.Execute(op.InvalidateCmd{})
 			}
 			// Give some padding to box and lay it out
@@ -685,7 +701,7 @@ func (msgPrompt) layout(gtx C) D {
 							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 								// Icon
 								layout.Rigid(func(gtx C) D {
-									img := widget.Image{Src: paint.NewImageOp(errorIco)}
+									img := widget.Image{Src: paint.NewImageOp(p.errorIco)}
 									img.Position = layout.Center
 									return img.Layout(gtx)
 								}),
@@ -696,7 +712,7 @@ func (msgPrompt) layout(gtx C) D {
 									c := gtx.Constraints
 									c.Min.Y, c.Max.Y = 18, 18
 									gtx.Constraints = c
-									lbl := material.Label(th, unit.Sp(16), "Confirm deletion of 1 note item?")
+									lbl := material.Label(p.th, unit.Sp(16), "Confirm deletion of 1 note item?")
 									lbl.Font.Weight = font.Medium
 									return lbl.Layout(gtx)
 								}),
@@ -713,14 +729,14 @@ func (msgPrompt) layout(gtx C) D {
 									return layout.Dimensions{Size: image.Pt(c.Max.X, c.Min.Y)}
 								}),
 								// OK action
-								layout.Rigid(material.Button(th, &prompt.promptConfirm, "Confirm").Layout),
+								layout.Rigid(material.Button(p.th, &p.confirmClickable, "Confirm").Layout),
 								// Spacer
 								layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
 								// Cancel action
 								layout.Rigid(func(gtx C) D {
-									th_ := *th
+									th_ := *p.th
 									th_.Palette.ContrastBg = color.NRGBA{A: 0}
-									return material.Button(&th_, &prompt.promptCancel, "Cancel").Layout(gtx)
+									return material.Button(&th_, &p.cancelClickable, "Cancel").Layout(gtx)
 								}),
 							)
 						}),
@@ -739,7 +755,7 @@ func (msgPrompt) layout(gtx C) D {
 	return layout.Dimensions{Size: gtx.Constraints.Max}
 }
 
-func Layout(gtx C) D {
+func (a *App) Layout(gtx C) D {
 	dims := layout.Background{}.Layout(gtx,
 		// Set a background
 		func(gtx C) D {
@@ -756,7 +772,7 @@ func Layout(gtx C) D {
 				}.Layout(gtx,
 					// Logo
 					layout.Rigid(func(gtx C) D {
-						return widget.Image{Src: paint.NewImageOp(logo)}.Layout(gtx)
+						return widget.Image{Src: paint.NewImageOp(a.logo)}.Layout(gtx)
 					}),
 					// Spacer
 					layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
@@ -764,33 +780,33 @@ func Layout(gtx C) D {
 					layout.Flexed(0.5, func(gtx C) D {
 						var children []layout.FlexChild
 						children = append(children,
-							layout.Rigid(notesPane),
+							layout.Rigid(a.notesPane.layout),
 							layout.Rigid(func(gtx C) D {
 								return layout.Spacer{Width: unit.Dp(7)}.Layout(gtx)
 							}),
 						)
-						if editorOpen {
-							children = append(children, layout.Flexed(0.5, editorPane))
+						if a.isEditorOpen {
+							children = append(children, layout.Flexed(0.5, a.editorPane.layout))
 						}
 						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx, children...)
 					}),
 					// Spacer
 					layout.Rigid(layout.Spacer{Height: unit.Dp(7)}.Layout),
 					// Layout message box
-					layout.Rigid(msg.layout),
+					// layout.Rigid(msg.layout),
 				)
 			})
 		},
 	)
 	// Trigger popup window if requested pop up
-	if prompt.isPromptOpen {
-		prompt.layout(gtx)
-	}
+	// if prompt.isPromptOpen {
+	// 	prompt.layout(gtx)
+	// }
 	return dims
 }
 
 // The very first thing called in UI(); check for any available notes and load them
-func Load() {
+func (a *App) Load() {
 	f, err := os.Open(NOTES_SAVE_PATH)
 	if err != nil && os.IsNotExist(err) {
 		return
@@ -801,23 +817,23 @@ func Load() {
 		json.Unmarshal(xorEncryptDecrypt(data), &v)
 		for _, val := range v {
 			for key, val1 := range val.(map[string]interface{}) {
-				notes = append(notes, note{title: key, content: val1.(string)})
+				a.notes = append(a.notes, note{title: key, content: val1.(string)})
 				break
 			}
 		}
 	}
 }
 
-func Save() {
+func (a *App) Save() {
 	v := map[int]interface{}{}
-	if len(scratchNotes) != 0 {
-		for i, vv := range scratchNotes {
+	if len(a.scratchNotes) != 0 {
+		for i, vv := range a.scratchNotes {
 			v[i] = map[string]string{
 				vv.title: vv.content,
 			}
 		}
 	} else {
-		for i, vv := range notes {
+		for i, vv := range a.notes {
 			v[i] = map[string]string{
 				vv.title: vv.content,
 			}

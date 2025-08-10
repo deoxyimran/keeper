@@ -4,11 +4,10 @@ import (
 	"log"
 	"os"
 
-	"github.com/deoxyimran/keeper/app/ui"
-
 	"gioui.org/app"
 	"gioui.org/op"
 	"gioui.org/unit"
+	myapp "github.com/deoxyimran/keeper/app"
 )
 
 func main() {
@@ -30,19 +29,21 @@ func main() {
 }
 
 func run(window *app.Window) error {
+	// Init app
+	a := myapp.NewApp()
 	// Load saved notes
-	ui.Load()
+	a.Load()
 	// Run loop
 	var ops op.Ops
 	for {
 		switch e := window.Event().(type) {
 		case app.DestroyEvent:
 			// Save notes
-			ui.Save()
+			a.Save()
 			return e.Err
 		case app.FrameEvent:
 			gtx := app.NewContext(&ops, e)
-			ui.Layout(gtx)
+			a.Layout(gtx)
 			e.Frame(gtx.Ops)
 		}
 	}
