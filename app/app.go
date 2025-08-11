@@ -34,17 +34,13 @@ type App struct {
 	// Widgets
 	notesPane  notesPane
 	editorPane editorPane
-	searchBar  widget.Editor
-	notesList  widget.List
-	addNoteBtn material.ButtonStyle
 	notif      notification
 	prompt     msgPrompt
 	// States
-	scratchNotes         []note
-	notes                []note
-	selectedNote         int
-	isAddNoteBtnDisabled bool
-	isEditorOpen         bool
+	scratchNotes []note
+	notes        []note
+	selectedNote int
+	isEditorOpen bool
 	// Logo, theme, etc.
 	logo image.Image
 	th   *material.Theme
@@ -128,12 +124,16 @@ func (a *button) layout(gtx C) D {
 }
 
 type noteItem struct {
-	th                 *material.Theme
-	ico                image.Image
-	getNote            func(i int) *note
-	isSelected         func(i int) bool
-	handleSelect       func(i int)
-	handleUnselectLast func()
+	th             *material.Theme
+	ico            image.Image
+	get            func(i int) *note
+	getSelectedInd func() int
+	isSelected     func(i int) bool
+	isHovered      func(i int) bool
+	handleHover    func(i int)
+	handleUnhover  func(i int)
+	handleSelect   func(i int)
+	handleUnselect func(i int)
 }
 
 func (ni *noteItem) layout(gtx C, index int) D {
@@ -147,13 +147,25 @@ func (ni *noteItem) layout(gtx C, index int) D {
 				return widget.Image{Src: paint.NewImageOp(ni.ico)}.Layout(gtx)
 			}),
 			layout.Flexed(0.5, func(gtx C) D {
-				return material.Label(ni.th, unit.Sp(13), ni.getNote(index).title).Layout(gtx)
+				return material.Label(ni.th, unit.Sp(13), ni.get(index).title).Layout(gtx)
 			}),
 		)
 	}
 	var dims layout.Dimensions
-	if ni.isSelected(index) {
-		// Selected note item (background included)
+
+	if !ni.isSelected(index) && ni.isHovered(index) {
+		// Hovered state
+		dims = layout.Background{}.Layout(gtx,
+			func(gtx C) D {
+				x, y := gtx.Constraints.Min.X, gtx.Constraints.Min.Y
+				defer clip.UniformRRect(image.Rect(0, 0, x, y), 10).Push(gtx.Ops).Pop()
+				paint.ColorOp{Color: color.NRGBA{B: 155, A: 90}}.Add(gtx.Ops)
+				paint.PaintOp{}.Add(gtx.Ops)
+				return D{Size: image.Pt(x, y)}
+			}, f,
+		)
+	} else if ni.isSelected(index) {
+		// Selected state
 		dims = layout.Background{}.Layout(gtx,
 			func(gtx C) D {
 				x, y := gtx.Constraints.Min.X, gtx.Constraints.Min.Y
@@ -167,21 +179,26 @@ func (ni *noteItem) layout(gtx C, index int) D {
 		// Unselected note item (background not included)
 		dims = f(gtx)
 	}
+
 	stack := clip.Rect{Max: dims.Size}.Push(gtx.Ops)
-	event.Op(gtx.Ops, ni.getNote(index))
+	event.Op(gtx.Ops, ni.get(index))
 	// Check for events and select
 	for {
 		ev, ok := gtx.Source.Event(pointer.Filter{
-			Target: ni.getNote(index),
-			Kinds:  pointer.Press | pointer.Release,
+			Target: ni.get(index),
+			Kinds:  pointer.Press | pointer.Release | pointer.Enter | pointer.Leave,
 		})
 		if !ok {
 			break
 		}
 		if x, ok := ev.(pointer.Event); ok {
 			switch x.Kind {
+			case pointer.Enter:
+				ni.handleHover(index)
+			case pointer.Release:
+				ni.handleUnhover(index)
 			case pointer.Press:
-				ni.handleUnselectLast()
+				ni.handleUnselect(ni.getSelectedInd())
 				ni.handleSelect(index)
 				gtx.Execute(op.InvalidateCmd{})
 			}
@@ -208,7 +225,6 @@ type notesPane struct {
 	notesListW widget.List
 	searchBarW widget.Editor
 	// States
-	lastSelected int
 	scratchNotes *[]note
 	notes        *[]note
 	selectedNote *int
@@ -230,10 +246,14 @@ func newNotesPane(th *material.Theme, searchIco image.Image, noteIco image.Image
 		th:  th,
 		ico: noteIco,
 		//Assign funcs
-		getNote:            np.getNote,
-		handleSelect:       np.handleSelectNote,
-		handleUnselectLast: np.handleUnselectLastNote,
-		isSelected:         np.isNoteSelected,
+		get:            np.getNote,
+		getSelectedInd: np.getSelectedNoteInd,
+		isSelected:     np.isNoteSelected,
+		isHovered:      np.isNoteHovered,
+		handleHover:    np.handleHoverNote,
+		handleUnhover:  np.handleUnhoverNote,
+		handleSelect:   np.handleSelectNote,
+		handleUnselect: np.handleUnselectNote,
 	}
 	return np
 }
@@ -242,18 +262,36 @@ func (np *notesPane) getNote(i int) *note {
 	return &(*np.notes)[i]
 }
 
-func (np *notesPane) handleSelectNote(i int) {
-	*np.selectedNote = i
-	(*np.notes)[i].isSelected = true
-	*np.isEditorOpen = true
+func (np *notesPane) getSelectedNoteInd() int {
+	return *np.selectedNote
 }
 
 func (np *notesPane) isNoteSelected(i int) bool {
 	return (*np.notes)[i].isSelected
 }
 
-func (np *notesPane) handleUnselectLastNote() {
-	(*np.notes)[np.lastSelected].isSelected = false
+func (np *notesPane) isNoteHovered(i int) bool {
+	return (*np.notes)[i].isHovered
+}
+
+func (np *notesPane) handleHoverNote(i int) {
+	(*np.notes)[i].isHovered = true
+}
+
+func (np *notesPane) handleUnhoverNote(i int) {
+	(*np.notes)[i].isHovered = false
+}
+
+func (np *notesPane) handleSelectNote(i int) {
+	*np.selectedNote = i
+	(*np.notes)[i].isSelected = true
+	*np.isEditorOpen = true
+}
+
+func (np *notesPane) handleUnselectNote(i int) {
+	*np.selectedNote = -1
+	(*np.notes)[i].isSelected = false
+	*np.isEditorOpen = false
 }
 
 func (np *notesPane) searchNotes(query string) {
@@ -615,23 +653,34 @@ func (nf *notification) layout(gtx C) D {
 		},
 	)
 	call := macro.Stop()
-	// if nf.prmp.isAnimating {
-	// 	msg.offsetY -= 0.7
-	// 	if msg.offsetY < 0 {
-	// 		msg.offsetY = 0
-	// 		msg.isAnimating = false
-	// 	}
-	// 	gtx.Execute(op.InvalidateCmd{})
-	// }
+
+	// Mark event area
 	defer clip.Rect{Max: dims.Size}.Push(gtx.Ops).Pop()
-	// defer op.Offset(image.Pt(0, int(msg.offsetY))).Push(gtx.Ops).Pop()
-	call.Add(gtx.Ops)
+
+	if nf.isAnimating { // Animate
+		nf.offsetY += 0.7
+		if nf.offsetY > float32(dims.Size.Y) {
+			nf.offsetY = float32(dims.Size.Y)
+			nf.isAnimating = false
+		}
+		gtx.Execute(op.InvalidateCmd{})
+		offset := float32(dims.Size.Y) - nf.offsetY
+		if offset <= 0.005 {
+			offset = 0
+		}
+		defer op.Offset(image.Pt(0, int(offset))).Push(gtx.Ops).Pop()
+		call.Add(gtx.Ops)
+	} else {
+		nf.offsetY = 0 // Reset offset when not animating
+		call.Add(gtx.Ops)
+	}
+
 	return dims
 }
 
-// func (notification) resetOffset() {
-// 	msg.offsetY = MSG_BOX_HEIGHT
-// }
+func (nf *notification) show() {
+	nf.isAnimating = true
+}
 
 type msgPrompt struct {
 	th                                *material.Theme
@@ -792,16 +841,16 @@ func (a *App) Layout(gtx C) D {
 					}),
 					// Spacer
 					layout.Rigid(layout.Spacer{Height: unit.Dp(7)}.Layout),
-					// Layout message box
-					// layout.Rigid(msg.layout),
+					// Layout notification
+					layout.Rigid(a.notif.layout),
 				)
 			})
 		},
 	)
-	// Trigger popup window if requested pop up
-	// if prompt.isPromptOpen {
-	// 	prompt.layout(gtx)
-	// }
+	// Trigger prompt if requested
+	if a.prompt.isPromptOpen {
+		a.prompt.layout(gtx)
+	}
 	return dims
 }
 
