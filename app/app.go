@@ -61,10 +61,7 @@ const (
 	NOTES_SAVE_PATH = "data/notes.bin"
 	NOTES_SAVE_DIR  = "data"
 	XOR_KEY         = "k@@P*Robfuscated"
-)
-
-const (
-	IMG_PATH = "res/images/"
+	IMG_PATH        = "res/images/"
 )
 
 func NewApp() *App {
@@ -105,20 +102,23 @@ type button struct {
 	onClick    func()
 }
 
+func (a *button) update(gtx C) {
+	if !a.isDisabled && a.clickable.Clicked(gtx) {
+		if a.onClick != nil {
+			a.onClick()
+		}
+	}
+}
+
 func (a *button) layout(gtx C) D {
+	a.update(gtx)
 	btn := material.Button(a.th, &a.clickable, a.label)
-	var dims layout.Dimensions
+	dims := btn.Layout(gtx)
 	if a.isDisabled {
-		macro := op.Record(gtx.Ops)
-		dims = btn.Layout(gtx)
-		call := macro.Stop()
-		call.Add(gtx.Ops)
 		defer clip.UniformRRect(image.Rect(0, 0, dims.Size.X, dims.Size.Y), 3).Push(gtx.Ops).Pop()
 		paint.ColorOp{Color: color.NRGBA{B: 200, A: 190}}.Add(gtx.Ops)
 		paint.PaintOp{}.Add(gtx.Ops)
 		event.Op(gtx.Ops, a)
-	} else {
-
 	}
 	return dims
 }
