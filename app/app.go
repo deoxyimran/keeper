@@ -3,15 +3,15 @@ package app
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"io"
 	"math"
+	"math/rand"
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/deoxyimran/keeper/app/utils/svgs"
 	"github.com/deoxyimran/keeper/res/images"
@@ -37,6 +37,7 @@ type App struct {
 	notif      notification
 	prompt     msgPrompt
 	// States
+	secret       string
 	scratchNotes []note
 	notes        []note
 	selectedNote int
@@ -58,16 +59,19 @@ type (
 )
 
 const (
-	NOTES_SAVE_PATH = "data/notes.bin"
-	NOTES_SAVE_DIR  = "data"
-	XOR_KEY         = "k@@P*Robfuscated"
-	IMG_PATH        = "res/images/"
+	SECRET_FILE = "secret"
+	NOTES_FILE  = "notes.bin"
+	DATA_DIR    = "data"
+	IMG_PATH    = "res/images/"
 )
 
 func NewApp() *App {
 	app := &App{}
 
-	// Loading app logo and icons
+	// Load saved notes, secret, config, etc. here
+	app.load()
+
+	// Load app logo and icons
 	app.logo, _ = png.Decode(bytes.NewReader(images.Logo))
 	noteIco, _ := svgs.LoadSvg(strings.NewReader(images.Note), image.Point{})
 	searchIco, _ := svgs.LoadSvg(strings.NewReader(images.Search), image.Point{})
@@ -224,7 +228,7 @@ type notesPane struct {
 	noteItem   noteItem
 	notesListW widget.List
 	searchBarW widget.Editor
-	// States
+	// States refs
 	scratchNotes *[]note
 	notes        *[]note
 	selectedNote *int
@@ -241,6 +245,11 @@ func newNotesPane(th *material.Theme, searchIco image.Image, noteIco image.Image
 		selectedNote: selectedNote,
 		isEditorOpen: isEditorOpen,
 		searchIco:    searchIco,
+		addNoteBtn: button{
+			th:         th,
+			label:      "Add Note",
+			isDisabled: false,
+		},
 	}
 	np.noteItem = noteItem{ // init note item
 		th:  th,
@@ -350,11 +359,10 @@ func (np *notesPane) layout(gtx C) D {
 	return layout.Flex{
 		Axis: layout.Vertical,
 	}.Layout(gtx,
-		// Searchbar
+		// Layout Searchbar widget
 		layout.Rigid(func(gtx C) D {
-			// Layout searchbar
 			dims := layout.Background{}.Layout(gtx,
-				// Layout searchbar bg
+				// Layout bg
 				func(gtx C) D {
 					sz := gtx.Constraints.Min
 					defer clip.UniformRRect(image.Rect(0, 0, sz.X, sz.Y), 5).Push(gtx.Ops).Pop()
@@ -362,7 +370,7 @@ func (np *notesPane) layout(gtx C) D {
 					paint.PaintOp{}.Add(gtx.Ops)
 					return layout.Dimensions{Size: sz}
 				},
-				// Layout searchbar
+				// Layout content
 				func(gtx C) D {
 					return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx C) D {
 						edit := material.Editor(np.th, &np.searchBarW, "Search")
@@ -382,12 +390,12 @@ func (np *notesPane) layout(gtx C) D {
 			)
 			return dims
 		}),
-		// Spacer
+		// Layout spacer
 		layout.Rigid(layout.Spacer{Height: unit.Dp(7)}.Layout),
-		// Layout note items
+		// Layout note items list widget
 		layout.Flexed(0.5, func(gtx C) D {
 			return layout.Background{}.Layout(gtx,
-				// Set a background
+				// Set background for list
 				func(gtx C) D {
 					sz := gtx.Constraints.Min
 					defer clip.UniformRRect(image.Rect(0, 0, sz.X, sz.Y), 7).Push(gtx.Ops).Pop()
@@ -403,11 +411,11 @@ func (np *notesPane) layout(gtx C) D {
 				},
 			)
 		}),
-		// Spacer
+		// Layout spacer
 		layout.Rigid(layout.Spacer{Height: unit.Dp(7)}.Layout),
-		// 'Add Note' button
+		// Layout 'Add Note' button
 		layout.Rigid(func(gtx C) D {
-			if np.addNoteBtn.clickable.Clicked(gtx) {
+			np.addNoteBtn.onClick = func() {
 				*np.notes = append(*np.notes, note{title: "Untitled"})
 			}
 			return np.addNoteBtn.layout(gtx)
@@ -426,7 +434,7 @@ func (i *icoButton) layout(gtx C) D {
 	call := macro.Stop()
 	// Register and check for events
 	defer clip.Rect{Max: dims.Size}.Push(gtx.Ops).Pop()
-	event.Op(gtx.Ops, &i)
+	event.Op(gtx.Ops, &i.ico)
 	for {
 		ev, ok := gtx.Source.Event(pointer.Filter{
 			Target: &i.ico,
@@ -458,7 +466,7 @@ type editorPane struct {
 	trashBtn    icoButton
 	titleEditor widget.Editor
 	noteEditor  widget.Editor
-	// States
+	// States refs
 	scratchNotes *[]note
 	notes        *[]note
 	selectedNote *int
@@ -854,26 +862,38 @@ func (a *App) Layout(gtx C) D {
 	return dims
 }
 
-// The very first thing called in UI(); check for any available notes and load them
-func (a *App) Load() {
-	f, err := os.Open(NOTES_SAVE_PATH)
-	if err != nil && os.IsNotExist(err) {
-		return
+func (a *App) load() error {
+	// Load secret first if exists otherwise create it
+	secretPath := DATA_DIR + "/" + SECRET_FILE
+	if _, err := os.Stat(secretPath); err == nil {
+		s, _ := os.ReadFile(secretPath)
+		a.secret = string(s)
 	} else {
-		defer f.Close()
-		data, _ := io.ReadAll(f)
-		v := map[int]interface{}{}
-		json.Unmarshal(xorEncryptDecrypt(data), &v)
-		for _, val := range v {
-			for key, val1 := range val.(map[string]interface{}) {
-				a.notes = append(a.notes, note{title: key, content: val1.(string)})
-				break
-			}
+		a.secret = a.genSecret(32)
+		err := os.MkdirAll(DATA_DIR, os.ModePerm) // Create relevant dirs
+		if err != nil {
+			return err
+		}
+		os.WriteFile(secretPath, []byte(a.secret), os.ModePerm)
+	}
+	// Load notes
+	notesPath := DATA_DIR + "/" + NOTES_FILE
+	data, err := os.ReadFile(notesPath)
+	if err != nil {
+		return err
+	}
+	v := map[int]any{}
+	json.Unmarshal(a.xorEncryptDecrypt(data), &v) // Decrypt notes
+	for _, val := range v {
+		for key, val1 := range val.(map[string]any) {
+			a.notes = append(a.notes, note{title: key, content: val1.(string)})
+			break
 		}
 	}
+	return nil
 }
 
-func (a *App) Save() {
+func (a *App) Save() error {
 	v := map[int]interface{}{}
 	if len(a.scratchNotes) != 0 {
 		for i, vv := range a.scratchNotes {
@@ -888,28 +908,34 @@ func (a *App) Save() {
 			}
 		}
 	}
-	_, err := os.Stat(NOTES_SAVE_DIR)
-	if err != nil && os.IsNotExist(err) {
-		os.Mkdir(NOTES_SAVE_DIR, os.ModePerm)
-	}
 	data, err := json.Marshal(v)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
-	f, err := os.OpenFile(NOTES_SAVE_PATH, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	f, err := os.OpenFile(NOTES_FILE, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	defer f.Close()
-	f.Write(xorEncryptDecrypt(data))
+	f.Write(a.xorEncryptDecrypt(data)) // Encrypt notes
+
+	return nil
 }
 
-func xorEncryptDecrypt(input []byte) []byte {
+func (a *App) genSecret(n int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	r := rand.New(rand.NewSource(time.Now().UnixNano() ^ int64(os.Getpid())))
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letters[r.Intn(len(letters))]
+	}
+	return string(b)
+}
+
+func (a *App) xorEncryptDecrypt(input []byte) []byte {
 	output := make([]byte, len(input))
 	for i := range input {
-		output[i] = input[i] ^ XOR_KEY[i%len(XOR_KEY)]
+		output[i] = input[i] ^ a.secret[i%len(a.secret)]
 	}
 	return output
 }
