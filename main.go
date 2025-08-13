@@ -29,10 +29,8 @@ func main() {
 }
 
 func run(window *app.Window) error {
-	// Init app
+	// Init app and load resources
 	a := myapp.NewApp()
-	// Load saved notes
-	a.Load()
 	// Run loop
 	var ops op.Ops
 	for {

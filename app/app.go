@@ -884,9 +884,9 @@ func (a *App) load() error {
 	}
 	v := map[int]any{}
 	json.Unmarshal(a.xorEncryptDecrypt(data), &v) // Decrypt notes
-	for _, val := range v {
-		for key, val1 := range val.(map[string]any) {
-			a.notes = append(a.notes, note{title: key, content: val1.(string)})
+	for i := 0; i < len(v); i++ {
+		for title, content := range v[i].(map[string]string) {
+			a.notes = append(a.notes, note{title: title, content: content})
 			break
 		}
 	}
@@ -894,7 +894,7 @@ func (a *App) load() error {
 }
 
 func (a *App) Save() error {
-	v := map[int]interface{}{}
+	v := map[int]any{}
 	if len(a.scratchNotes) != 0 {
 		for i, vv := range a.scratchNotes {
 			v[i] = map[string]string{
